@@ -23,6 +23,9 @@ load_env()
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 API_URL = os.getenv("API_URL")
+if not WEBHOOK_URL or not API_URL:
+    raise SystemExit("Missing required env vars: WEBHOOK_URL and API_URL must be set")
+
 
 # (equivalent to requests' verify=False)
 ssl_context = ssl.create_default_context()
@@ -50,6 +53,7 @@ teams_logger.setLevel(logging.INFO)
 teams_handler = logging.FileHandler(TEAMS_LOG_PATH, encoding="utf-8")
 teams_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
 teams_logger.addHandler(teams_handler)
+
 
 
 def screen(data):
@@ -258,18 +262,21 @@ def check_and_alert(data):
 
 
         last_state[system] = online
+ 
 
+def clear_screen():
+    os.system("cls" if os.name == "nt" else "clear")
 
 def main():
-    os.system("")
-    os.system("clear")  
+    
+    clear_screen()
     data = api_call()
     send_teams_initial_status(data)
     while True:
         data = api_call()
         check_and_alert(data)
 
-        for i in range(10):
+        for _ in range(10):
             screen(data)
             time.sleep(delay)
 

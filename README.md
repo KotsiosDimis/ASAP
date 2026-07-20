@@ -13,12 +13,14 @@ IBM i (AS/400).
 
 ## Requirements:
 
-`app.py` requires nothing beyond the **Python standard library** — no external packages needed, just Python 3.Python 3.8 or higher — [download here](https://www.python.org/downloads/)
+`app.py` requires nothing beyond the **Python standard library** — no external packages needed, just Python 3.8 or higher — [download here](https://www.python.org/downloads/)
+
+`jobs.py` requires `ibm_db` so it can query local IBM i Db2.
 
 `demo_api.py` is included only for local testing (it simulates the status API so you can try the monitor without a real backend). It requires **Flask**:
 
 ```bash
-pip install flask
+pip install -r Requirements.txt
 ```
 
 You won't need Flask (or `demo_api.py` at all) if you're running against a real API endpoint.
@@ -29,7 +31,9 @@ You won't need Flask (or `demo_api.py` at all) if you're running against a real 
 2. Rename `.env.example` to `.env` and fill in your values:
    - `WEBHOOK_URL` — Teams Workflows webhook URL
    - `API_URL` — endpoint returning system status JSON
-3. Run: `python app.py`
+   - `DB2USER` / `DB2PWD` — IBM i Db2 credentials for `jobs.py`
+   - `OBJECT_STATS_SQL` — SQL returning `OBJLIB`, `OBJNAME`, `OBJTYPE`, and `OBJTEXT`
+3. Run one monitor with `python app.py` or both monitors with `python main.py`
 
 ## Setup with demo_api.py for local testing:
 
@@ -37,13 +41,13 @@ If you don't have a real status API to test against, you can use the included `d
 
 1. Install Flask:
 ```bash
-   pip install flask
+   pip install -r Requirements.txt
 ```
 2. Run the demo API:
 ```bash
    python demo_api.py
 ```
-3. In your `.env`, set `API_URL` to point to the demo API (e.g. `http://localhost:5000/status`)
+3. In your `.env`, set `API_URL` to point to the demo API (e.g. `http://127.0.0.1:5000/demo/api/SystemStatus`)
 4. In a separate terminal, run the monitor:
 ```bash
    python app.py
@@ -61,4 +65,3 @@ This lets you see the full alert flow (Teams messages, logs, screen output) with
 
 **System back up alert:**
 ![Up alert](screenshots/system_up.png)
-

@@ -81,13 +81,18 @@ def start_escape_watcher(stop_event):
     return watcher
 
 
-def main(silent=False):
+def main(silent=False, run_app=True, run_jobs=True):
     error_queue = queue.Queue()
     stop_event = threading.Event()
-    threads = [
-        threading.Thread(target=run_monitor, args=(app.main, silent, "app", error_queue, stop_event), name="app", daemon=True),
-        threading.Thread(target=run_monitor, args=(jobs.main, silent, "jobs", error_queue, stop_event), name="jobs", daemon=True),
-    ]
+    threads = []
+
+    if run_app:
+        threads.append(threading.Thread(target=run_monitor, args=(app.main, silent, "app", error_queue, stop_event), name="app", daemon=True))
+    if run_jobs:
+        threads.append(threading.Thread(target=run_monitor, args=(jobs.main, silent, "jobs", error_queue, stop_event), name="jobs", daemon=True))
+
+    if not threads:
+        raise ValueError("No monitor selected. Use --app, --jobs, or neither to run both.")
 
     for thread in threads:
         thread.start()
@@ -122,5 +127,11 @@ def main(silent=False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="ASAP monitor runner")
     parser.add_argument("--ns", action="store_true", help="No-screen: suppress terminal output; still send notifications")
+    parser.add_argument("--app", action="store_true", help="Run only the app monitor")
+    parser.add_argument("--jobs", action="store_true", help="Run only the jobs monitor")
     args = parser.parse_args()
-    main(silent=args.ns)
+
+    run_app = args.app or not args.jobs
+    run_jobs = args.jobs or not args.app
+
+    main(silent=args.ns, run_app=run_app, run_jobs=run_jobs)

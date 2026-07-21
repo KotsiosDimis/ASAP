@@ -24,11 +24,10 @@ def load_env(path=".env"):
 
 load_env()
 
-WEBHOOK_URL = os.getenv("WEBHOOK_URL_Processes_Status") or os.getenv("WEBHOOK_URL")
-DB2USER = os.getenv("DB2USER")
-DB2PWD = os.getenv("DB2PWD")
-if not WEBHOOK_URL or not DB2USER or not DB2PWD:
-    raise SystemExit("Missing required env vars: WEBHOOK_URL, DB2USER and DB2PWD must be set")
+# Do not read required env vars at import time — check inside main()
+WEBHOOK_URL = None
+DB2USER = None
+DB2PWD = None
 
 
 # (equivalent to requests' verify=False)
@@ -58,8 +57,7 @@ teams_logger.addHandler(teams_handler)
 
 # Only these program names are relevant for this script.
 OBJECT_STATS_SQL = os.getenv("OBJECT_STATS_SQL")
-if not OBJECT_STATS_SQL:
-    raise SystemExit("Missing required env var: OBJECT_STATS_SQL must be set")
+OBJECT_STATS_SQL = None
 
 
 def getConnection():
@@ -110,18 +108,20 @@ def fetch_object_rows(conn):
     return rows
 
 
-def send_object_alert(rows):
+def send_object_alert(rows, silent=False):
     lines = [
         f"{item['OBJLIB']}.{item['OBJNAME']} ({item['OBJTYPE']}) - {item['OBJTEXT']}"
         for item in rows
     ]
     if rows:
         summary = "\n".join(lines)
-        print(f"Found {len(rows)} watched object(s):")
-        print(summary)
+        if not silent:
+            print(f"Found {len(rows)} watched object(s):")
+            print(summary)
     else:
         summary = "No watched objects found."
-        print(summary)
+        if not silent:
+            print(summary)
 
     payload = {
         "type": "message",
@@ -181,7 +181,22 @@ def send_object_alert(rows):
         teams_logger.error(f"Object metadata alert failed - Unexpected error: {e}")
 
 
-def main():
+def main(silent=False):
+    global WEBHOOK_URL, DB2USER, DB2PWD, OBJECT_STATS_SQL
+
+    # reload env in case .env was changed after import
+    load_env()
+    WEBHOOK_URL = os.getenv("WEBHOOK_URL_Processes_Status") or os.getenv("WEBHOOK_URL")
+    DB2USER = os.getenv("DB2USER")
+    DB2PWD = os.getenv("DB2PWD")
+    OBJECT_STATS_SQL = os.getenv("OBJECT_STATS_SQL")
+
+    if not WEBHOOK_URL or not DB2USER or not DB2PWD or not OBJECT_STATS_SQL:
+        if not silent:
+            print("Missing required env vars for jobs monitor: WEBHOOK_URL, DB2USER, DB2PWD and OBJECT_STATS_SQL must be set")
+        job_logger.error("Missing required env vars for jobs monitor: WEBHOOK_URL, DB2USER, DB2PWD and OBJECT_STATS_SQL must be set")
+        return
+
     previous_rows = []
 
     while True:
@@ -194,7 +209,8 @@ def main():
 
             if rows is None:
                 error_message = "Failed to fetch object metadata."
-                print(error_message)
+                if not silent:
+                    print(error_message)
                 job_logger.error(error_message)
                 continue
 
@@ -203,15 +219,16 @@ def main():
             if current_rows != previous_rows:
                 for row in current_rows:
                     if row not in previous_rows:
-                        print(
-                            f"New watched object found: "
-                            f"{row['OBJLIB']}.{row['OBJNAME']} "
-                            f"({row['OBJTYPE']}) - {row['OBJTEXT']}"
-                        )
+                        if not silent:
+                            print(
+                                f"New watched object found: "
+                                f"{row['OBJLIB']}.{row['OBJNAME']} "
+                                f"({row['OBJTYPE']}) - {row['OBJTEXT']}"
+                            )
                         teams_rows.append(row)
 
                 if teams_rows:
-                    send_object_alert(teams_rows)
+                    send_object_alert(teams_rows, silent=silent)
                     job_logger.info(
                         f"Sent Teams alert for {len(teams_rows)} new watched object row(s)."
                     )
@@ -222,7 +239,8 @@ def main():
 
         except Exception as e:
             error_message = f"Object monitor check failed: {e}"
-            print(error_message)
+            if not silent:
+                print(error_message)
             job_logger.error(error_message)
 
         finally:

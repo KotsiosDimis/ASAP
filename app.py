@@ -5,8 +5,12 @@ import os
 import urllib.request
 import urllib.error
 import logging
+import threading
 
 delay = 2.0
+terminal_message = ""
+terminal_message_expires = 0.0
+terminal_message_lock = threading.Lock()
 
 #use instead of dotenv package to load environment variables from .env file
 def load_env(path=".env"):
@@ -57,6 +61,21 @@ teams_logger.addHandler(teams_handler)
 
 
 
+def get_terminal_message():
+    global terminal_message, terminal_message_expires
+    with terminal_message_lock:
+        if time.time() < terminal_message_expires:
+            return terminal_message
+        return ""
+
+
+def set_terminal_message(message, hold_seconds=6):
+    global terminal_message, terminal_message_expires
+    with terminal_message_lock:
+        terminal_message = str(message)
+        terminal_message_expires = time.time() + hold_seconds
+
+
 def screen(data, silent=False):
     GREEN = "\033[32m"
     RED = "\033[31m"
@@ -76,6 +95,12 @@ def screen(data, silent=False):
         reason = item['reason'] if item['reason'] else "all good"
         last_check = item['dateTimeUtc']
         print(f"{system:<12} {online:<17} {reason:<20} {last_check:<30}", flush=True)
+
+    terminal_message = get_terminal_message()
+    if terminal_message:
+        print()
+        print(f"{RED}ERROR: {terminal_message}{RESET}", flush=True)
+
     print("\033[J", end="", flush=True)
 
 
@@ -83,7 +108,7 @@ def api_call():
     if not API_URL:
         raise RuntimeError("API_URL not configured")
 
-    with urllib.request.urlopen(API_URL, context=ssl_context) as response:
+    with urllib.request.urlopen(API_URL, context=ssl_context, timeout=10) as response:
         data = json.loads(response.read().decode())
     return data
 
@@ -288,28 +313,54 @@ def clear_screen(silent=False):
     os.system("cls" if os.name == "nt" else "clear")
 
 
-def main(silent=False):
+def main(silent=False, stop_event=None):
     global WEBHOOK_URL, API_URL
+    if stop_event is None:
+        stop_event = threading.Event()
+
     # load env again in case .env was created/modified after import
     load_env()
     WEBHOOK_URL = os.getenv("WEBHOOK_URL_System_Status")
     API_URL = os.getenv("API_URL")
 
     if not WEBHOOK_URL or not API_URL:
+        message = "Missing required env vars for app monitor: WEBHOOK_URL and API_URL must be set"
         if not silent:
-            print("Missing required env vars for app monitor: WEBHOOK_URL and API_URL must be set")
-        teams_logger.error("Missing required env vars for app monitor: WEBHOOK_URL and API_URL must be set")
+            print(message)
+        teams_logger.error(message)
+        set_terminal_message(message, hold_seconds=10)
         return
 
     clear_screen(silent=silent)
-    data = api_call()
-    send_teams_initial_status(data)
-    while True:
+    try:
         data = api_call()
-        check_and_alert(data)
-        screen(data, silent=silent)
-        time.sleep(delay)
+        send_teams_initial_status(data)
+    except Exception as exc:
+        message = f"Initial app monitor startup failed: {exc}"
+        teams_logger.error(message)
+        if not silent:
+            print(message)
+        set_terminal_message(message, hold_seconds=10)
+        return
 
+    while not stop_event.is_set():
+        try:
+            data = api_call()
+            check_and_alert(data)
+            screen(data, silent=silent)
+        except Exception as exc:
+            error_message = f"App monitor loop error: {exc}"
+            teams_logger.error(error_message)
+            if not silent:
+                print(error_message)
+            set_terminal_message(error_message, hold_seconds=8)
+            break
+
+        if stop_event.wait(delay):
+            break
+
+    if not silent:
+        print("App monitor stopped.")
 
 
 if __name__ == "__main__":

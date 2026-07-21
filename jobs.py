@@ -5,9 +5,13 @@ import os
 import urllib.request
 import urllib.error
 import logging
+import threading
 from datetime import datetime, timezone
 
-import ibm_db
+try:
+    import ibm_db
+except ImportError:  # pragma: no cover - allows graceful startup on systems without the package
+    ibm_db = None
 
 
 def load_env(path=".env"):
@@ -57,10 +61,20 @@ teams_logger.addHandler(teams_handler)
 
 # Only these program names are relevant for this script.
 OBJECT_STATS_SQL = os.getenv("OBJECT_STATS_SQL")
-OBJECT_STATS_SQL = None
+
+
+def set_terminal_message(message, hold_seconds=8):
+    try:
+        import app
+        if hasattr(app, 'set_terminal_message'):
+            app.set_terminal_message(message, hold_seconds=hold_seconds)
+    except Exception:
+        pass
 
 
 def getConnection():
+    if ibm_db is None:
+        raise RuntimeError("ibm_db is not installed; IBM i Db2 support is unavailable")
     try:
         return ibm_db.connect("*LOCAL", DB2USER, DB2PWD)
     except Exception as e:
@@ -181,8 +195,10 @@ def send_object_alert(rows, silent=False):
         teams_logger.error(f"Object metadata alert failed - Unexpected error: {e}")
 
 
-def main(silent=False):
+def main(silent=False, stop_event=None):
     global WEBHOOK_URL, DB2USER, DB2PWD, OBJECT_STATS_SQL
+    if stop_event is None:
+        stop_event = threading.Event()
 
     # reload env in case .env was changed after import
     load_env()
@@ -192,14 +208,16 @@ def main(silent=False):
     OBJECT_STATS_SQL = os.getenv("OBJECT_STATS_SQL")
 
     if not WEBHOOK_URL or not DB2USER or not DB2PWD or not OBJECT_STATS_SQL:
+        message = "Missing required env vars for jobs monitor: WEBHOOK_URL, DB2USER, DB2PWD and OBJECT_STATS_SQL must be set"
         if not silent:
-            print("Missing required env vars for jobs monitor: WEBHOOK_URL, DB2USER, DB2PWD and OBJECT_STATS_SQL must be set")
-        job_logger.error("Missing required env vars for jobs monitor: WEBHOOK_URL, DB2USER, DB2PWD and OBJECT_STATS_SQL must be set")
+            print(message)
+        job_logger.error(message)
+        set_terminal_message(message, hold_seconds=10)
         return
 
     previous_rows = []
 
-    while True:
+    while not stop_event.is_set():
         teams_rows = []
         conn = None
 
@@ -212,6 +230,7 @@ def main(silent=False):
                 if not silent:
                     print(error_message)
                 job_logger.error(error_message)
+                set_terminal_message(error_message, hold_seconds=10)
                 continue
 
             current_rows = normalize_rows(rows)
@@ -242,6 +261,7 @@ def main(silent=False):
             if not silent:
                 print(error_message)
             job_logger.error(error_message)
+            set_terminal_message(error_message, hold_seconds=10)
 
         finally:
             if conn is not None:
@@ -250,7 +270,10 @@ def main(silent=False):
                 except Exception:
                     pass
 
-        time.sleep(20)
+        if stop_event.wait(20):
+            break
+
+    print("Jobs monitor stopped.")
 
 
 if __name__ == "__main__":

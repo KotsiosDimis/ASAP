@@ -1,8 +1,7 @@
 # ASAP — AS400 Status Alert Platform
 
 ASAP monitors the status of in-house and external systems and alerts engineers via 
-Microsoft Teams when a system goes up or down. It's designed to run natively on 
-IBM i (AS/400).
+Microsoft Teams when a system goes up or down and also to monitor spesific jobs and send alerts on teams when their status changes. It's designed to run natively on IBM i (AS/400).
 
 ## Features:
 
@@ -13,9 +12,9 @@ IBM i (AS/400).
 
 ## Requirements:
 
-`app.py` requires nothing beyond the **Python standard library** — no external packages needed, just Python 3.8 or higher — [download here](https://www.python.org/downloads/)
+`main.py --app` requires nothing beyond the **Python standard library** — no external packages needed, just Python 3.8 or higher — [download here](https://www.python.org/downloads/)
 
-`jobs.py` requires `ibm_db` so it can query local IBM i Db2.
+`main.py --jobs` requires `ibm_db` so it can query local IBM i Db2.
 
 `demo_api.py` is included only for local testing (it simulates the status API so you can try the monitor without a real backend). It requires **Flask**:
 

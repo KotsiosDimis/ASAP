@@ -1,3 +1,8 @@
 .env
+__pycache__/
+*.pyc
 status_history.log
 teams_status.log
+job_status.log
+job_teams_status.log
+demo_jobs.py

@@ -83,8 +83,8 @@ def screen(data, silent=False):
     if silent:
         return
 
-    # Clear the full terminal screen and move cursor to top-left before redrawing.
-    print("\033[H\033[2J", end="", flush=True)
+    # Clear the terminal before each redraw so the output stays fresh.
+    clear_screen(silent=False)
     print(f"{'System':<12} {'Online':<8} {'Reason':<20} {'Last Check (UTC)':<30}")
     for item in data:
         system = item['system']
@@ -326,6 +326,7 @@ def main(silent=False, stop_event=None):
     if not WEBHOOK_URL or not API_URL:
         message = "Missing required env vars for app monitor: WEBHOOK_URL and API_URL must be set"
         if not silent:
+            clear_screen(silent=False)
             print(message)
         teams_logger.error(message)
         set_terminal_message(message, hold_seconds=10)
@@ -339,6 +340,7 @@ def main(silent=False, stop_event=None):
         message = f"Initial app monitor startup failed: {exc}"
         teams_logger.error(message)
         if not silent:
+            clear_screen(silent=False)
             print(message)
         set_terminal_message(message, hold_seconds=10)
         return
@@ -352,6 +354,7 @@ def main(silent=False, stop_event=None):
             error_message = f"App monitor loop error: {exc}"
             teams_logger.error(error_message)
             if not silent:
+                clear_screen(silent=False)
                 print(error_message)
             set_terminal_message(error_message, hold_seconds=8)
             break
@@ -360,6 +363,7 @@ def main(silent=False, stop_event=None):
             break
 
     if not silent:
+        clear_screen(silent=False)
         print("App monitor stopped.")
 
 

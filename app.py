@@ -2,18 +2,25 @@ import json
 import ssl
 import time
 import os
+import sys
+import http.client
+import urllib.parse
 import urllib.request
 import urllib.error
 import logging
 import threading
 
-delay = 2.0
+delay = 30.0
 terminal_message = ""
 terminal_message_expires = 0.0
 terminal_message_lock = threading.Lock()
 
 #use instead of dotenv package to load environment variables from .env file
-def load_env(path=".env"):
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+def load_env(path=None):
+    if path is None:
+        path = "/home/KDIMITRIOU/projects/final/.env"
     if not os.path.exists(path):
         return
     with open(path) as f:
@@ -60,6 +67,14 @@ teams_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
 teams_logger.addHandler(teams_handler)
 
 
+# Persistent connection to API_URL, reused across polls instead of opening a
+# fresh TCP/TLS connection every 30s. Keyed by (scheme, host) so it
+# transparently reconnects if API_URL ever points somewhere else. Every
+# failure path below raises, so the except block always drops the stale
+# connection rather than risking a silent-failure loop.
+_api_conn = None
+_api_conn_key = None
+
 
 def get_terminal_message():
     global terminal_message, terminal_message_expires
@@ -104,13 +119,61 @@ def screen(data, silent=False):
     print("\033[J", end="", flush=True)
 
 
+def _api_connection(parsed):
+    """Return a live HTTP(S) connection to API_URL's host, reconnecting only
+    if we don't have one yet or the target host/scheme changed."""
+    global _api_conn, _api_conn_key
+    key = (parsed.scheme, parsed.netloc)
+
+    if _api_conn is not None and _api_conn_key == key:
+        return _api_conn
+
+    if _api_conn is not None:
+        try:
+            _api_conn.close()
+        except Exception:
+            pass
+
+    if parsed.scheme == "https":
+        _api_conn = http.client.HTTPSConnection(parsed.netloc, timeout=10, context=ssl_context)
+    else:
+        _api_conn = http.client.HTTPConnection(parsed.netloc, timeout=10)
+    _api_conn_key = key
+    return _api_conn
+
+
 def api_call():
     if not API_URL:
         raise RuntimeError("API_URL not configured")
 
-    with urllib.request.urlopen(API_URL, context=ssl_context, timeout=10) as response:
-        data = json.loads(response.read().decode())
-    return data
+    global _api_conn, _api_conn_key
+    parsed = urllib.parse.urlparse(API_URL)
+    path = parsed.path or "/"
+    if parsed.query:
+        path += "?" + parsed.query
+
+    conn = _api_connection(parsed)
+    try:
+        conn.request("GET", path)
+        response = conn.getresponse()
+        body = response.read()
+        if response.status != 200:
+            # Deliberately raise instead of returning None/False here: every
+            # failure mode in this function goes through the except block
+            # below, so the stale connection always gets dropped. A silent
+            # non-exception failure path is what caused the jobs monitor to
+            # get stuck reusing a broken Db2 statement earlier — this avoids
+            # that same trap for the HTTP connection.
+            raise RuntimeError(f"API call failed with status {response.status}")
+        return json.loads(body.decode())
+    except Exception:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        _api_conn = None
+        _api_conn_key = None
+        raise
 
 def send_teams_initial_status(data):
     lines = [f"{item['system']}: {'Online' if item['online'] else 'Offline'}" for item in data]
@@ -190,8 +253,6 @@ def system_down(system, reason, last_check):
             }
         ]
     }
-
-   
 
     if not WEBHOOK_URL:
         teams_logger.error("WEBHOOK_URL not configured; cannot send DOWN alert")
@@ -288,11 +349,7 @@ def check_and_alert(data):
         reason = item['reason']
         last_check = item['dateTimeUtc']
 
-       
-
         previous = last_state.get(system)
-
-
 
         # only alert the moment a system transitions from online/unknown -> offline
         if not online and previous is not False :
@@ -310,15 +367,19 @@ def check_and_alert(data):
 def clear_screen(silent=False):
     if silent:
         return
-    os.system("cls" if os.name == "nt" else "clear")
+    # Move the cursor home and clear the visible screen with ANSI escapes
+    # instead of shelling out to "clear"/"cls". os.system() forks a whole
+    # child process just to redraw a table — this avoids that fork/exec on
+    # every single redraw of the live status screen.
+    sys.stdout.write("\033[H\033[2J")
+    sys.stdout.flush()
 
 
-def main(silent=False, stop_event=None):
+def main(silent=True, stop_event=None):
     global WEBHOOK_URL, API_URL
     if stop_event is None:
         stop_event = threading.Event()
 
-    # load env again in case .env was created/modified after import
     load_env()
     WEBHOOK_URL = os.getenv("WEBHOOK_URL_System_Status")
     API_URL = os.getenv("API_URL")
@@ -343,7 +404,9 @@ def main(silent=False, stop_event=None):
             clear_screen(silent=False)
             print(message)
         set_terminal_message(message, hold_seconds=10)
-        return
+        # don't return here either — retry instead of giving up forever
+        if stop_event.wait(delay):
+            return
 
     while not stop_event.is_set():
         try:
@@ -354,13 +417,17 @@ def main(silent=False, stop_event=None):
             error_message = f"App monitor loop error: {exc}"
             teams_logger.error(error_message)
             if not silent:
-                clear_screen(silent=False)
-                print(error_message)
-            set_terminal_message(error_message, hold_seconds=8)
-            break
+                set_terminal_message(error_message, hold_seconds=8)
+            # no break — just skip this cycle and try again next tick
 
         if stop_event.wait(delay):
             break
+
+    if _api_conn is not None:
+        try:
+            _api_conn.close()
+        except Exception:
+            pass
 
     if not silent:
         clear_screen(silent=False)
@@ -368,4 +435,8 @@ def main(silent=False, stop_event=None):
 
 
 if __name__ == "__main__":
-    main()
+    # Default behavior: run silently (no terminal output).
+    # Pass --s on the command line to enable the live status screen.
+    import sys
+    silent_mode = "--s" not in sys.argv
+    main(silent=silent_mode)

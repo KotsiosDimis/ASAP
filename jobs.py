@@ -1,6 +1,5 @@
 import json
 import ssl
-import time
 import os
 import urllib.request
 import urllib.error
@@ -13,8 +12,12 @@ try:
 except ImportError:  # pragma: no cover - allows graceful startup on systems without the package
     ibm_db = None
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-def load_env(path=".env"):
+
+def load_env(path=None):
+    if path is None:
+        path = "/home/KDIMITRIOU/projects/final/.env"
     if not os.path.exists(path):
         return
     with open(path) as f:
@@ -33,14 +36,12 @@ WEBHOOK_URL = None
 DB2USER = None
 DB2PWD = None
 
-
 # (equivalent to requests' verify=False)
 ssl_context = ssl.create_default_context()
 ssl_context.check_hostname = False
 ssl_context.verify_mode = ssl.CERT_NONE
 
 # Logger for job status history
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 JOB_LOG_PATH = os.path.join(BASE_DIR, "job_status.log")
 
 job_logger = logging.getLogger("jobs")
@@ -58,9 +59,11 @@ teams_handler = logging.FileHandler(TEAMS_LOG_PATH, encoding="utf-8")
 teams_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
 teams_logger.addHandler(teams_handler)
 
-
 # Only these program names are relevant for this script.
 OBJECT_STATS_SQL = os.getenv("OBJECT_STATS_SQL")
+
+# How often (seconds) the monitor loop re-checks the watched objects.
+CHECK_INTERVAL_SECONDS = 30
 
 
 def set_terminal_message(message, hold_seconds=8):
@@ -90,18 +93,6 @@ def getData(conn, sqlStr):
         return None
 
 
-def normalize_rows(rows):
-    return sorted(
-        rows,
-        key=lambda row: (
-            row["OBJLIB"],
-            row["OBJNAME"],
-            row["OBJTYPE"],
-            row["OBJTEXT"],
-        ),
-    )
-
-
 def fetch_object_rows(conn):
     stmt = getData(conn, OBJECT_STATS_SQL)
     if stmt is None:
@@ -110,22 +101,22 @@ def fetch_object_rows(conn):
     rows = []
     row = ibm_db.fetch_assoc(stmt)
     while row:
-        rows.append({
-            "OBJLIB": (row.get("OBJLIB") or "").strip(),
-            "OBJNAME": (row.get("OBJNAME") or "").strip(),
-            "OBJTYPE": (row.get("OBJTYPE") or "").strip(),
-            "OBJTEXT": (row.get("OBJTEXT") or "").strip(),
-        })
+        rows.append((
+            (row.get("OBJLIB") or "").strip(),
+            (row.get("OBJNAME") or "").strip(),
+            (row.get("OBJTYPE") or "").strip(),
+            (row.get("OBJTEXT") or "").strip(),
+        ))
         row = ibm_db.fetch_assoc(stmt)
 
     ibm_db.free_stmt(stmt)
     return rows
 
 
-def send_object_alert(rows, silent=False):
+def send_object_alert(rows, silent=True):
     lines = [
-        f"{item['OBJLIB']}.{item['OBJNAME']} ({item['OBJTYPE']}) - {item['OBJTEXT']}"
-        for item in rows
+        f"{objlib}.{objname} ({objtype}) - {objtext}"
+        for objlib, objname, objtype, objtext in rows
     ]
     if rows:
         summary = "\n".join(lines)
@@ -171,6 +162,10 @@ def send_object_alert(rows, silent=False):
         ]
     }
 
+    if not WEBHOOK_URL:
+        teams_logger.error("WEBHOOK_URL not configured; cannot send object metadata alert")
+        return
+
     data_bytes = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         WEBHOOK_URL,
@@ -195,7 +190,7 @@ def send_object_alert(rows, silent=False):
         teams_logger.error(f"Object metadata alert failed - Unexpected error: {e}")
 
 
-def main(silent=False, stop_event=None):
+def main(silent=True, stop_event=None):
     global WEBHOOK_URL, DB2USER, DB2PWD, OBJECT_STATS_SQL
     if stop_event is None:
         stop_event = threading.Event()
@@ -215,13 +210,18 @@ def main(silent=False, stop_event=None):
         set_terminal_message(message, hold_seconds=10)
         return
 
-    previous_rows = []
+    previous_rows = set()
 
     while not stop_event.is_set():
         teams_rows = []
         conn = None
 
         try:
+            # A fresh connection + exec_immediate every cycle is the
+            # slower but proven-reliable pattern from the original script.
+            # A connection/prepared-statement reuse optimization was tried
+            # here and caused the monitor to silently stop sending Teams
+            # alerts, so it's been reverted in favor of correctness.
             conn = getConnection()
             rows = fetch_object_rows(conn)
 
@@ -231,30 +231,29 @@ def main(silent=False, stop_event=None):
                     print(error_message)
                 job_logger.error(error_message)
                 set_terminal_message(error_message, hold_seconds=10)
-                continue
+            else:
+                # Rows are hashable tuples, so a set diff is O(n) instead of
+                # the original's O(n^2) "row not in previous_rows" scan.
+                current_rows = set(rows)
+                new_rows = current_rows - previous_rows
 
-            current_rows = normalize_rows(rows)
-
-            if current_rows != previous_rows:
-                for row in current_rows:
-                    if row not in previous_rows:
+                if new_rows:
+                    for row in new_rows:
+                        objlib, objname, objtype, objtext = row
                         if not silent:
                             print(
                                 f"New watched object found: "
-                                f"{row['OBJLIB']}.{row['OBJNAME']} "
-                                f"({row['OBJTYPE']}) - {row['OBJTEXT']}"
+                                f"{objlib}.{objname} ({objtype}) - {objtext}"
                             )
                         teams_rows.append(row)
 
-                if teams_rows:
                     send_object_alert(teams_rows, silent=silent)
                     job_logger.info(
                         f"Sent Teams alert for {len(teams_rows)} new watched object row(s)."
                     )
-                else:
-                    job_logger.info("Watched object rows changed, but no new rows were added.")
 
-                previous_rows = current_rows
+                if current_rows != previous_rows:
+                    previous_rows = current_rows
 
         except Exception as e:
             error_message = f"Object monitor check failed: {e}"
@@ -270,11 +269,20 @@ def main(silent=False, stop_event=None):
                 except Exception:
                     pass
 
-        if stop_event.wait(20):
+        if stop_event.wait(CHECK_INTERVAL_SECONDS):
             break
 
-    print("Jobs monitor stopped.")
+    if not silent:
+        print("Jobs monitor stopped.")
 
 
 if __name__ == "__main__":
-    main()
+    # Default behavior: run silently (no terminal output).
+    # Pass --s on the command line to enable console print output.
+    import sys
+    silent_mode = "--s" not in sys.argv
+    try:
+        main(silent=silent_mode)
+    except KeyboardInterrupt:
+        if not silent_mode:
+            print("\nJobs monitor interrupted by user, exiting.")

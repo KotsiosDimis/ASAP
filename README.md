@@ -33,11 +33,23 @@ You won't need Flask (or `demo_api.py` at all) if you're running against a real 
    - `DB2USER` / `DB2PWD` — IBM i Db2 credentials for `jobs.py`
    - `OBJECT_STATS_SQL` — SQL returning `OBJLIB`, `OBJNAME`, `OBJTYPE`, and `OBJTEXT`
 3. 
-   - Run both monitors with `python main.py` or `python3 main.py --app --jobs` with no screen `python3 main.py --ns`
-   - Run system-status monitor `python3 main.py --app` with no screen `python3 main.py --ns --app`
-   - Run jobs monitor `python3 main.py --jobs` with no screen `python3 main.py --ns --jobs`
+   - Run both monitors with `python main.py` or `python3 main.py --app --jobs` with screen `python3 main.py --s`
+   - Run system-status monitor `python3 main.py --app` with screen `python3 main.py --s --app`
+   - Run jobs monitor `python3 main.py --jobs` with screen `python3 main.py --s --jobs`
 
-4. ESC exits the program
+## Running as a Batch Job on IBM i (`run.sh`)
+
+A `run.sh` script is included so the monitor can be launched from the **QSH (Qshell)**
+environment rather than **QP2TERM**. QP2TERM sessions are tied to an interactive job and
+do not persist independently, so a process started there cannot be submitted as a
+standalone batch job.
+
+Launching via QSH instead allows the monitor to be submitted with `SBMJOB` as a proper
+batch job, which can then be configured (e.g. via a startup program referenced in
+`QSTRUPPGM`, or scheduled in the job scheduler) to start automatically whenever the
+system is IPL'd or restarted. This is required because IBM i does not automatically
+resume interactive terminal sessions after a restart — without this, the monitor would
+need to be started manually every time.
 
 ## Setup with demo_api.py for local testing:
 

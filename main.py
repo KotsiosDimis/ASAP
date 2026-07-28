@@ -48,22 +48,32 @@ def escape_watcher(stop_event):
             except OSError:
                 return
 
-        old_settings = termios.tcgetattr(fd)
-        old_flags = fcntl.fcntl(fd, fcntl.F_GETFL)
-        tty.setcbreak(fd)
-        fcntl.fcntl(fd, fcntl.F_SETFL, old_flags | os.O_NONBLOCK)
+        try:
+            old_settings = termios.tcgetattr(fd)
+            old_flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+            tty.setcbreak(fd)
+            fcntl.fcntl(fd, fcntl.F_SETFL, old_flags | os.O_NONBLOCK)
+        except (termios.error, OSError):
+            # Some shells report isatty()=True but don't implement the
+            # termios ioctls Python needs (e.g. IBM i's PASE/QSH shell).
+            # There's no Esc-to-quit available here — just disable this
+            # watcher instead of crashing the thread with a traceback.
+            return
 
+        # select() blocks until the fd is readable instead of polling on a
+        # fixed sleep, so this thread only wakes when a key is actually
+        # pressed (or once per timeout as a stop_event safety check).
         while not stop_event.is_set():
+            ready, _, _ = select.select([fd], [], [], 0.25)
+            if not ready:
+                continue
             try:
                 ch = os.read(fd, 1)
-            except BlockingIOError:
-                ch = b''
-            except OSError:
+            except (BlockingIOError, OSError):
                 break
             if ch == b"\x1b":
                 stop_event.set()
                 break
-            time.sleep(0.05)
     finally:
         if fd is not None:
             try:
@@ -81,7 +91,7 @@ def start_escape_watcher(stop_event):
     return watcher
 
 
-def main(silent=False, run_app=True, run_jobs=True):
+def main(silent=True, run_app=True, run_jobs=True):
     error_queue = queue.Queue()
     stop_event = threading.Event()
     threads = []
@@ -100,19 +110,24 @@ def main(silent=False, run_app=True, run_jobs=True):
     start_escape_watcher(stop_event)
 
     try:
-        while any(thread.is_alive() for thread in threads) and not stop_event.is_set():
+        # Block on the error queue instead of polling it in a tight
+        # get_nowait()/sleep(0.1) loop. This wakes the supervisor thread
+        # only when a monitor actually reports an error, or at most once
+        # per timeout to check whether all worker threads have exited and
+        # to remain responsive to stop_event/KeyboardInterrupt.
+        while not stop_event.is_set():
             try:
-                name, exc = error_queue.get_nowait()
+                name, exc = error_queue.get(timeout=1.0)
             except queue.Empty:
-                pass
-            else:
-                if not silent:
-                    print(f"\nMonitor '{name}' failed with an error:")
-                    print(exc)
-                stop_event.set()
-                break
+                if not any(thread.is_alive() for thread in threads):
+                    break
+                continue
 
-            time.sleep(0.1)
+            if not silent:
+                print(f"\nMonitor '{name}' failed with an error:")
+                print(exc)
+            stop_event.set()
+            break
     except KeyboardInterrupt:
         if not silent:
             print("\nKeyboardInterrupt received. Shutting down ASAP monitor...")
@@ -126,12 +141,13 @@ def main(silent=False, run_app=True, run_jobs=True):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="ASAP monitor runner")
-    parser.add_argument("--ns", action="store_true", help="No-screen: suppress terminal output; still send notifications")
+    parser.add_argument("--s", action="store_true", help="Show screen: print live terminal output. Default is silent (no terminal output).")
     parser.add_argument("--app", action="store_true", help="Run only the app monitor")
     parser.add_argument("--jobs", action="store_true", help="Run only the jobs monitor")
     args = parser.parse_args()
 
     run_app = args.app or not args.jobs
     run_jobs = args.jobs or not args.app
+    silent_mode = not args.s
 
-    main(silent=args.ns, run_app=run_app, run_jobs=run_jobs)
+    main(silent=silent_mode, run_app=run_app, run_jobs=run_jobs)

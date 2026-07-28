@@ -17,7 +17,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def load_env(path=None):
     if path is None:
-        path = "/home/KDIMITRIOU/projects/final/.env"
+        path = "path to env"
     if not os.path.exists(path):
         return
     with open(path) as f:
